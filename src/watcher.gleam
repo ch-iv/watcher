@@ -1,12 +1,12 @@
-import gleam/io
-import gleam/string_builder
-import wisp
-import mist
 import gleam/erlang/process
-import gleam/otp/actor
 import gleam/int
+import gleam/io
+import gleam/otp/actor
+import gleam/string_builder
+import mist
+import wisp
 
-pub fn new() -> Result(process.Subject(Message), actor.StartError) { 
+pub fn new() -> Result(process.Subject(Message), actor.StartError) {
   actor.start(0, handle_message)
 }
 
@@ -26,6 +26,7 @@ pub fn handle_message(message: Message, count: Int) -> actor.Next(Message, Int) 
     }
   }
 }
+
 /// The HTTP request handler- your application!
 /// 
 pub fn middleware(
@@ -49,19 +50,25 @@ pub fn middleware(
   handle_request(req)
 }
 
-pub fn handle_request(req: wisp.Request, counter: process.Subject(Message)) -> wisp.Response {
+pub fn handle_request(
+  req: wisp.Request,
+  counter: process.Subject(Message),
+) -> wisp.Response {
   let assert Ok(count) = increment(counter)
   // Apply the middleware stack for this request/response.
   use _req <- middleware(req)
   // Later we'll use templates, but for now a string will do.
-  let body = string_builder.from_string("<h1>Your number is " <> int.to_string(count) <> "</h1>")
+  let body =
+    string_builder.from_string(
+      "<h1>Your number is " <> int.to_string(count) <> "</h1>",
+    )
   // Return a 200 OK response with the body and a HTML content type.
   wisp.html_response(body, 200)
 }
 
 pub fn main() {
   io.println("Hello from watcher!")
-  
+
   // The counter actor is a proccess that stores internal state and updates it 
   // based on the recieved messages
   let assert Ok(counter) = new()
