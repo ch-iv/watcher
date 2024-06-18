@@ -1,10 +1,17 @@
 import gleam/erlang/process
+import gleam/http/request
+import gleam/http/response
+import gleam/httpc
 import gleam/int
 import gleam/io
+import gleam/list
 import gleam/otp/actor
+import gleam/result
 import gleam/string_builder
 import mist
 import wisp
+
+const port = 8000
 
 pub fn new() -> Result(process.Subject(Message), actor.StartError) {
   actor.start(0, handle_message)
@@ -54,16 +61,50 @@ pub fn handle_request(
   req: wisp.Request,
   counter: process.Subject(Message),
 ) -> wisp.Response {
-  let assert Ok(count) = increment(counter)
   // Apply the middleware stack for this request/response.
-  use _req <- middleware(req)
-  // Later we'll use templates, but for now a string will do.
-  let body =
-    string_builder.from_string(
-      "<h1>Your number is " <> int.to_string(count) <> "</h1>",
-    )
-  // Return a 200 OK response with the body and a HTML content type.
-  wisp.html_response(body, 200)
+  use req <- middleware(req)
+
+  case wisp.path_segments(req) {
+    [] -> {
+      let assert Ok(count) = increment(counter)
+      let body =
+        string_builder.from_string(
+          "<h1>Your number is " <> int.to_string(count) <> "</h1>",
+        )
+      wisp.html_response(body, 200)
+    }
+
+    ["random"] -> {
+      let body =
+        string_builder.from_string(
+          "<h1>The random number is "
+          <> int.to_string(int.random(9_999_999))
+          <> "</h1>",
+        )
+      wisp.html_response(body, 200)
+    }
+    _ -> wisp.not_found()
+  }
+}
+
+pub fn scanner() {
+  io.println("Started the scanner")
+
+  let urls = [
+    "http://localhost:" <> int.to_string(port) <> "/",
+    "http://localhost:" <> int.to_string(port) <> "/random",
+  ]
+
+  list.each(urls, fn(url) {
+    let assert Ok(req) = request.to(url)
+    case httpc.send(req) {
+      Ok(resp) -> io.println(url <> ":\n" <> resp.body)
+      _ -> io.println("Error fetching " <> url)
+    }
+  })
+
+  process.sleep(500)
+  scanner()
 }
 
 pub fn main() {
@@ -73,7 +114,7 @@ pub fn main() {
   // based on the recieved messages
   let assert Ok(counter) = new()
 
-  wisp.configure_logger()
+  // wisp.configure_logger()
 
   // Here we generate a secret key, but in a real application you would want to
   // load this from somewhere so that it is not regenerated on every restart.
@@ -83,10 +124,11 @@ pub fn main() {
   let assert Ok(_) =
     wisp.mist_handler(handle_request(_, counter), secret_key_base)
     |> mist.new
-    |> mist.port(8000)
+    |> mist.port(port)
     |> mist.start_http
 
   // The web server runs in new Erlang process, so put this one to sleep while
   // it works concurrently.
+  process.start(scanner, True)
   process.sleep_forever()
 }
