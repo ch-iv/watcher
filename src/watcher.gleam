@@ -1,12 +1,13 @@
+import gap
+import gap/styling
 import gleam/erlang/process
 import gleam/http/request
-import gleam/http/response
 import gleam/httpc
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/otp/actor
-import gleam/result
+import gleam/string
 import gleam/string_builder
 import mist
 import wisp
@@ -87,24 +88,87 @@ pub fn handle_request(
   }
 }
 
-pub fn scanner() {
-  io.println("Started the scanner")
-
-  let urls = [
-    "http://localhost:" <> int.to_string(port) <> "/",
-    "http://localhost:" <> int.to_string(port) <> "/random",
-  ]
-
-  list.each(urls, fn(url) {
-    let assert Ok(req) = request.to(url)
-    case httpc.send(req) {
-      Ok(resp) -> io.println(url <> ":\n" <> resp.body)
-      _ -> io.println("Error fetching " <> url)
+pub fn get_body(url) -> Result(String, Nil) {
+  let assert Ok(req) = request.to(url)
+  case httpc.send(req) {
+    Ok(resp) -> Ok(resp.body)
+    _ -> {
+      io.println("Error fetching " <> url)
+      Error(Nil)
     }
-  })
+  }
+}
+
+pub type DiffResult {
+  Diff(diff: String, self: String, other: String)
+  NoDiff(self: String, other: String)
+  Incomplete
+}
+
+pub fn calc_diff(
+  self: Result(String, Nil),
+  other: Result(String, Nil),
+) -> DiffResult {
+  case self, other {
+    Ok(selfs), Ok(others) -> {
+      let cmp =
+        gap.compare_lists(string.split(selfs, "\n"), string.split(others, "\n"))
+        |> styling.from_comparison()
+        |> styling.highlight(
+          fn(first) { "-" <> first },
+          fn(second) { "+" <> second },
+          fn(_) { "" },
+        )
+        |> styling.serialize(fn(part) {
+          case part {
+            styling.Part(acc, lines, highlight) ->
+              acc
+              <> {
+                lines
+                |> list.map(fn(line) { highlight(line) })
+                |> list.filter(fn(x) { x != "" })
+                |> string.join("\n")
+              }
+            styling.All(result) -> result
+          }
+        })
+        |> styling.to_styled_comparison()
+
+      case cmp.first, cmp.second {
+        "", "" -> NoDiff(selfs, others)
+        _, _ -> Diff(cmp.second <> "\n" <> cmp.first, selfs, others)
+      }
+    }
+    _, _ -> Incomplete
+  }
+}
+
+// Processes a source and returns the new response from that source
+pub fn process_source(
+  tup: #(String, Result(String, Nil)),
+) -> Result(String, Nil) {
+  let #(url, past_response) = tup
+  let new_response = get_body(url)
+
+  let diff = calc_diff(past_response, new_response)
+
+  io.println("Processing " <> url)
+  case diff {
+    Diff(diff, _, _) -> io.println(diff)
+    NoDiff(_, _) -> io.println("No diff")
+    Incomplete -> io.println("Incomplete")
+  }
+
+  new_response
+}
+
+pub fn scan(past_responses: List(Result(String, Nil)), urls: List(String)) {
+  let new_responses =
+    list.zip(urls, past_responses)
+    |> list.map(process_source)
 
   process.sleep(500)
-  scanner()
+  scan(new_responses, urls)
 }
 
 pub fn main() {
@@ -129,6 +193,13 @@ pub fn main() {
 
   // The web server runs in new Erlang process, so put this one to sleep while
   // it works concurrently.
-  process.start(scanner, True)
+  let urls = [
+    "http://localhost:" <> int.to_string(port) <> "/",
+    "http://localhost:" <> int.to_string(port) <> "/random",
+  ]
+  process.start(
+    fn() { scan(list.repeat(Error(Nil), list.length(urls)), urls) },
+    True,
+  )
   process.sleep_forever()
 }
